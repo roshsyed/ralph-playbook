@@ -1,91 +1,93 @@
 #!/bin/bash
 set -o pipefail
-# Usage: ./loop_streamed.sh [plan|build] [max_iterations]
-# Examples:
-#   ./loop_streamed.sh              # Build mode, unlimited iterations
-#   ./loop_streamed.sh 20           # Build mode, max 20 iterations
-#   ./loop_streamed.sh build 20     # Build mode, max 20 iterations
-#   ./loop_streamed.sh plan         # Plan mode, unlimited iterations
-#   ./loop_streamed.sh plan 5       # Plan mode, max 5 iterations
 
-# Parse arguments
-if [ "$1" = "plan" ]; then
-    # Plan mode
+# 1. Defaults
+MODE="build"
+PROMPT_FILE="PROMPT_build.md"
+MAX_ITERATIONS=0
+MODEL="${MODEL:-opus}" # Defaults to opus unless environment variable is set
+
+# 2. Argument Parsing
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+  -m | --model)
+    MODEL="$2"
+    shift 2
+    ;;
+  plan)
     MODE="plan"
     PROMPT_FILE="PROMPT_plan.md"
-    MAX_ITERATIONS=${2:-0}
-elif [ "$1" = "build" ]; then
-    # Explicit build mode (with optional max iterations)
+    shift
+    ;;
+  build)
     MODE="build"
     PROMPT_FILE="PROMPT_build.md"
-    MAX_ITERATIONS=${2:-0}
-elif [[ "$1" =~ ^[0-9]+$ ]]; then
-    # Build mode with max iterations (bare number)
-    MODE="build"
-    PROMPT_FILE="PROMPT_build.md"
-    MAX_ITERATIONS=$1
-else
-    # Build mode, unlimited (no arguments or invalid input)
-    MODE="build"
-    PROMPT_FILE="PROMPT_build.md"
-    MAX_ITERATIONS=0
+    shift
+    ;;
+  *)
+    POSITIONAL_ARGS+=("$1")
+    shift
+    ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # Restore non-flag arguments
+
+# Handle max_iterations logic
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+  MAX_ITERATIONS=$1
 fi
 
 ITERATION=0
 CURRENT_BRANCH=$(git branch --show-current)
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Mode:   $MODE"
-echo "Prompt: $PROMPT_FILE"
-echo "Branch: $CURRENT_BRANCH"
-[ $MAX_ITERATIONS -gt 0 ] && echo "Max:    $MAX_ITERATIONS iterations"
+echo "Mode:    $MODE"
+echo "Model:   $MODEL"
+echo "Prompt:  $PROMPT_FILE"
+echo "Branch:  $CURRENT_BRANCH"
+[ $MAX_ITERATIONS -gt 0 ] && echo "Max:     $MAX_ITERATIONS iterations"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Verify prompt file exists
 if [ ! -f "$PROMPT_FILE" ]; then
-    echo "Error: $PROMPT_FILE not found"
-    exit 1
+  echo "Error: $PROMPT_FILE not found"
+  exit 1
 fi
 
 while true; do
-    if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
-        echo "Reached max iterations: $MAX_ITERATIONS"
-        break
-    fi
+  if [ $MAX_ITERATIONS -gt 0 ] && [ $ITERATION -ge $MAX_ITERATIONS ]; then
+    echo "Reached max iterations: $MAX_ITERATIONS"
+    break
+  fi
 
-    # Run Ralph iteration with selected prompt
-    # -p: Headless mode (non-interactive, prints output and exits)
-    # --dangerously-skip-permissions: Auto-approve all tool calls (YOLO mode)
-    # --model opus: Primary agent uses Opus for complex reasoning
-    # --verbose: Detailed execution logging
-    # --output-format stream-json: Structured output piped to parse_stream.js
-    # --include-partial-messages: Stream partial tool results for live feedback
-
-    FULL_PROMPT="$(cat "$PROMPT_FILE")
+  FULL_PROMPT="$(cat "$PROMPT_FILE")
 
 Execute the instructions above."
 
-    echo "⏳ Running Claude..."
-    echo ""
+  echo "⏳ Running Claude ($MODEL)..."
+  echo ""
 
-    # Stream JSON with partial messages, parse for readable output
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    claude -p "$FULL_PROMPT" \
-        --dangerously-skip-permissions \
-        --model opus \
-        --verbose \
-        --output-format stream-json \
-        --include-partial-messages | node "$SCRIPT_DIR/parse_stream.js"
+  # Stream JSON with partial messages, parse for readable output
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-    echo ""
-    echo "✅ Claude iteration complete"
+  # Use the $MODEL variable here
+  claude -p "$FULL_PROMPT" \
+    --dangerously-skip-permissions \
+    --model "$MODEL" \
+    --verbose \
+    --output-format stream-json \
+    --include-partial-messages | node "$SCRIPT_DIR/parse_stream.js"
 
-    # Push changes after each iteration
-    git push origin "$CURRENT_BRANCH" || {
-        echo "Failed to push. Creating remote branch..."
-        git push -u origin "$CURRENT_BRANCH"
-    }
+  echo ""
+  echo "✅ Claude iteration complete"
 
-    ITERATION=$((ITERATION + 1))
-    echo -e "\n\n======================== LOOP $ITERATION ========================\n"
+  git push origin "$CURRENT_BRANCH" || {
+    echo "Failed to push. Creating remote branch..."
+    git push -u origin "$CURRENT_BRANCH"
+  }
+
+  ITERATION=$((ITERATION + 1))
+  echo -e "\n\n======================== LOOP $ITERATION ========================\n"
 done
+
